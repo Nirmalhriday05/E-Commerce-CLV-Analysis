@@ -6,6 +6,7 @@
 ---
 
 ## 🎯 Project Overview
+
 A data analytics and business intelligence project focused on segmenting e-commerce customers to identify high-value cohorts. By analyzing historical transaction data using RFM (Recency, Frequency, Monetary) metrics, this project provides actionable insights to help businesses optimize marketing spend and improve customer retention strategies.
 
 ### 🛠️ Core Tools & Technologies Used:
@@ -16,6 +17,7 @@ A data analytics and business intelligence project focused on segmenting e-comme
 ---
 
 ## 📊 Dataset & Processing
+
 * **Volume:** Successfully processed and sanitized ~1,000,000 raw transaction records.
 * **Scope:** Analyzed purchasing behaviors of 5,878 unique customers over a 2-year period.
 * **Pipeline:** Automated data cleaning to handle missing values, duplicates, and anomalies, ensuring high data integrity for the final business analysis.
@@ -31,5 +33,8 @@ Through structured data analysis, I segmented the customer base into three tiers
    * **High-Value Segment:** Recommend allocating the primary marketing budget here for VIP retention and loyalty programs.
    * **Low-Value Segment:** Constitutes 40% of the customer base but only 5.4% of revenue, indicating a need to minimize acquisition spend on this demographic.
 
+---
+
 ## 🖥️ Interactive Dashboard Deployment
+
 Designed and deployed an interactive web dashboard (using Dash/Plotly) that translates these complex data points into clear, easy-to-understand 3D visualizations, allowing stakeholders to dynamically track customer value and KPIs.
