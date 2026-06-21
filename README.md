@@ -26,7 +26,7 @@ A data analytics and business intelligence project focused on segmenting e-comme
 
 Through structured data analysis, I segmented the customer base into three tiers (High, Medium, and Low Value) and uncovered the following critical business insights:
 
-1. **Validation of the Pareto Principle:** * Discovered that exactly **25% of the customer base** (the High-Value cohort) was responsible for driving **77.5% of the total revenue** (approx. $10.9M).
+1. **Validation of the Pareto Principle:** Discovered that exactly **25% of the customer base** (the High-Value cohort) was responsible for driving **77.5% of the total revenue** (approx. $10.9M).
 2. **Actionable Strategy:**
    * **High-Value Segment:** Recommend allocating the primary marketing budget here for VIP retention and loyalty programs.
    * **Low-Value Segment:** Constitutes 40% of the customer base but only 5.4% of revenue, indicating a need to minimize acquisition spend on this demographic.
