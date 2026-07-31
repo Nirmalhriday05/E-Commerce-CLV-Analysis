@@ -1,7 +1,7 @@
 # Customer Lifetime Value (CLV) & Customer Segmentation 📊
 
-**Author:** Nirmmal Hriday N R
-**Contact:** nirmalhriday12804@gmail.com
+**Author:** Nirmmal Hriday N R  
+**Contact:** nirmalhriday12804@gmail.com | [LinkedIn](https://www.linkedin.com/in/nirmmal-hriday-144961374)
 
 ---
 
