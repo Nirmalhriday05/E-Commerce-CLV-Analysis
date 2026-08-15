@@ -475,7 +475,7 @@ model_kpis = (
         dbc.Col(kpi_card("Model R²", _fmt_r2(METRICS.get("r2"))), md=3),
         dbc.Col(kpi_card("Model RMSE", _fmt_rmse(METRICS.get("rmse"))), md=3),
         dbc.Col(kpi_card("Predictions", rfm["predicted_value"].notna().sum()), md=3),
-        dbc.Col(kpi_card("Model Type", METRICS.get("model_type", "Unknown")), md=3),
+        dbc.Col(kpi_card("Model Type", METRICS.get("model", "Unknown")), md=3),
     ], className="g-3 mb-3")
     if METRICS else html.Div()
 )
