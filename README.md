@@ -66,9 +66,9 @@ The original single-period model predicted `monetary` from `recency`/`frequency`
 
 | Metric | Value |
 |---|---|
-| Return AUC (holdout) | 0.793 |
-| Return AUC (5-fold CV) | 0.776 ± 0.018 |
-| Top-20% revenue capture | 64.5% |
+| Return AUC (holdout) | 0.797 |
+| Return AUC (5-fold CV) | 0.778 ± 0.017 |
+| Top-20% revenue capture | 64.2% |
 | Baseline (rank by past spend) | 65.2% |
 
 **Honest disclosure:** for *ranking* customers, this model does **not** beat the simple baseline of sorting by past spend — the difference is within noise. Its real value is the **calibrated return probability**, which a simple sort can't give you. This is disclosed openly rather than hidden, and is discussed further in `METHODOLOGY.md`.
