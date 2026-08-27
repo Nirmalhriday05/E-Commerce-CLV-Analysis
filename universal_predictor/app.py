@@ -7,8 +7,6 @@ import json
 import base64
 import logging
 from datetime import datetime
-from pathlib import Path
-from typing import Tuple, Optional, List, Dict, Any
 
 import numpy as np
 import pandas as pd
@@ -53,6 +51,11 @@ XGB_MAX_DEPTH = 6
 XGB_LEARNING_RATE = 0.08
 MAX_ROWS_IN_MEMORY = 50000
 CV_FOLDS = 5
+# A categorical feature (gender, category, payment method, etc.) is only
+# useful if it has a small, repeating set of values. Above this many
+# distinct values it's more likely a free-text or ID-like column, which
+# one-hot encoding would turn into hundreds of near-useless 0/1 columns.
+CATEGORICAL_MAX_UNIQUE = 30
 
 CLV_SEGMENTS = {
     "High Value": {"min": 0.75, "color": "#28a745"},
@@ -115,7 +118,7 @@ def create_header():
         style={"padding": "1rem 0"}
     )
 
-app.layout = html.Div([
+app.layout = html.Div(id="main-container", className="", children=[
     dcc.Store(id="store-df"),
     dcc.Store(id="store-preds"),
     dcc.Store(id="store-metrics"),
@@ -213,6 +216,18 @@ app.layout = html.Div([
                                                 options=[{"label": " Cross-validation", "value": "cv"}],
                                                 value=["cv"],
                                                 switch=True
+                                            ),
+                                            dbc.Checklist(
+                                                id="opt-aggregate",
+                                                options=[{"label": " Aggregate rows to one-per-customer first", "value": "agg"}],
+                                                value=[],
+                                                switch=True
+                                            ),
+                                            html.Small(
+                                                "Turn this on if your file has multiple rows per customer "
+                                                "(e.g. one row per purchase). It totals up the target column "
+                                                "per customer and summarizes each feature automatically.",
+                                                className="text-muted"
                                             )
                                         ], md=4),
                                         dbc.Col([
@@ -399,7 +414,7 @@ app.layout = html.Div([
             ])
         ], id="main-tabs", active_tab="tab-train")
     ], fluid=True)
-], id="main-container")
+])
 
 def parse_upload(contents: str, filename: str) -> pd.DataFrame:
     if not contents or "," not in contents:
@@ -411,6 +426,20 @@ def parse_upload(contents: str, filename: str) -> pd.DataFrame:
             df = pd.read_excel(io.BytesIO(decoded))
         else:
             df = pd.read_csv(io.BytesIO(decoded))
+        # Duplicate column names make df[col] return a DataFrame instead of a
+        # Series, which crashes model .fit(). Rename duplicates before use.
+        if df.columns.duplicated().any():
+            dupes = df.columns[df.columns.duplicated()].unique().tolist()
+            counts = {}
+            new_cols = []
+            for c in df.columns:
+                if list(df.columns).count(c) > 1:
+                    counts[c] = counts.get(c, 0) + 1
+                    new_cols.append(c if counts[c] == 1 else f"{c}_{counts[c]}")
+                else:
+                    new_cols.append(c)
+            df.columns = new_cols
+            logger.warning(f"Renamed duplicate columns in {filename}: {dupes}")
         logger.info(f"Parsed {filename}: {len(df)} rows, {len(df.columns)} columns")
         return df
     except Exception as e:
@@ -426,9 +455,22 @@ def validate_model_inputs(df, id_col, target_col, feat_cols):
     valid_rows = df[[id_col, target_col] + feat_cols].dropna()
     if len(valid_rows) < 30:
         return False, f"Insufficient data: only {len(valid_rows)} valid rows"
-    non_numeric = [f for f in feat_cols if not pd.api.types.is_numeric_dtype(df[f])]
-    if non_numeric:
-        return False, f"Non-numeric features: {non_numeric}"
+    # Non-numeric features are now allowed (they get one-hot encoded in
+    # train_model), but only if they look like genuine CATEGORIES rather
+    # than free text -- e.g. "Male"/"Female" or "Clothing"/"Shoes", not an
+    # address, a review comment, or a near-unique ID-like column. A column
+    # with too many distinct values would blow up into hundreds of useless
+    # feature columns and isn't something the model can learn from anyway.
+    bad_text_cols = []
+    for f in feat_cols:
+        if pd.api.types.is_numeric_dtype(df[f]):
+            continue
+        n_unique = df[f].nunique(dropna=True)
+        if n_unique > CATEGORICAL_MAX_UNIQUE or n_unique > 0.5 * len(df):
+            bad_text_cols.append(f)
+    if bad_text_cols:
+        return False, (f"These columns have too many distinct values to use as categories "
+                        f"(free text or ID-like, not a real category): {bad_text_cols}")
     return True, "Valid"
 
 def segment_customers(predictions):
@@ -443,17 +485,84 @@ def segment_customers(predictions):
         segments[mask] = segment_name
     return segments
 
+def aggregate_to_customer_level(df, id_col, target_col, feat_cols):
+    """
+    Collapses transaction-level data (many rows per customer, e.g. one row
+    per purchase) into one row per customer, which is what CLV prediction
+    actually needs.
+
+    Defaults, chosen to match how these columns are normally used:
+      - target column   -> SUM (e.g. total amount spent = CLV)
+      - numeric features -> MEAN (e.g. average age is just age; makes sense
+                             for anything that describes the customer rather
+                             than a single transaction)
+      - text/category features -> MODE (the customer's most common value,
+                             e.g. their most-purchased category)
+    A new column, "n_transactions", is added automatically -- how many rows
+    (purchases) each customer had -- since that's a genuinely useful CLV
+    signal that wouldn't otherwise exist after aggregating.
+    """
+    df = df.loc[:, ~df.columns.duplicated()].copy()
+    numeric_feats = [f for f in feat_cols if pd.api.types.is_numeric_dtype(df[f])]
+    categorical_feats = [f for f in feat_cols if f not in numeric_feats]
+
+    agg_spec = {target_col: "sum"}
+    agg_spec.update({f: "mean" for f in numeric_feats})
+
+    def _mode(series):
+        m = series.mode(dropna=True)
+        return m.iloc[0] if len(m) else np.nan
+
+    agg_spec.update({f: _mode for f in categorical_feats})
+
+    grouped = df.groupby(id_col, as_index=False).agg(agg_spec)
+    counts = df.groupby(id_col, as_index=False).size().rename(columns={"size": "n_transactions"})
+    grouped = grouped.merge(counts, on=id_col, how="left")
+
+    logger.info(f"Aggregated {len(df):,} rows -> {len(grouped):,} customers "
+                f"(target='{target_col}' summed, {len(numeric_feats)} numeric features averaged, "
+                f"{len(categorical_feats)} categorical features set to most-common value)")
+    return grouped, feat_cols + ["n_transactions"]
+
 def train_model(df, id_col, target_col, feat_cols, model_type, use_log1p, test_size=0.2, use_cv=True):
+    # Drop duplicate column names first: df[col] would otherwise return a
+    # DataFrame rather than a Series and break both validation and .fit().
+    if df.columns.duplicated().any():
+        logger.warning("Dropping duplicate columns before training")
+        df = df.loc[:, ~df.columns.duplicated()]
     is_valid, msg = validate_model_inputs(df, id_col, target_col, feat_cols)
     if not is_valid:
         raise ValueError(msg)
     
-    work = df[[id_col, target_col] + feat_cols].dropna().copy()
-    X = work[feat_cols]
-    y = work[target_col].astype(float)
+    work = df[[id_col, target_col] + feat_cols].dropna().copy().reset_index(drop=True)
+    work = work.loc[:, ~work.columns.duplicated()]
+
+    # Split requested features into numeric (used as-is) and categorical
+    # (text values like "Male"/"Female" or "Clothing"/"Shoes"). A model can
+    # only do arithmetic on numbers, so each category gets turned into its
+    # own 0/1 column -- e.g. gender becomes "gender_Male" (1 if Male, else
+    # 0). This is called one-hot encoding: it's how real-world tools turn
+    # words into something a model can learn from.
+    numeric_feats = [f for f in feat_cols if pd.api.types.is_numeric_dtype(work[f])]
+    categorical_feats = [f for f in feat_cols if f not in numeric_feats]
+
+    X_num = work[numeric_feats] if numeric_feats else pd.DataFrame(index=work.index)
+    if categorical_feats:
+        X_cat = pd.get_dummies(work[categorical_feats].astype(str), prefix=categorical_feats)
+        X = pd.concat([X_num, X_cat], axis=1)
+    else:
+        X = X_num
+    encoded_feat_cols = X.columns.tolist()
+
+    y = work[target_col]
+    if isinstance(y, pd.DataFrame):          # duplicate target name
+        y = y.iloc[:, 0]
+    y = y.astype(float)
     ids = work[id_col].astype(str)
     
-    logger.info(f"Training with {len(work)} samples, {len(feat_cols)} features")
+    logger.info(f"Training with {len(work)} samples, {len(feat_cols)} requested features "
+                f"({len(numeric_feats)} numeric + {len(categorical_feats)} categorical -> "
+                f"{len(encoded_feat_cols)} model columns after encoding)")
     
     if use_log1p:
         y_transformed = np.log1p(y)
@@ -484,6 +593,12 @@ def train_model(df, id_col, target_col, feat_cols, model_type, use_log1p, test_s
     y_train_orig = inverse_transform(y_train)
     y_test_orig = inverse_transform(y_test)
     preds_all = inverse_transform(model.predict(X))
+    if use_log1p:
+        # expm1 of a negative prediction yields a negative value; customer value
+        # cannot be negative, so floor at zero.
+        preds_all = np.clip(preds_all, 0, None)
+        y_pred_test = np.clip(y_pred_test, 0, None)
+        y_pred_train = np.clip(y_pred_train, 0, None)
     
     train_rmse = float(np.sqrt(mean_squared_error(y_train_orig, y_pred_train)))
     test_rmse = float(np.sqrt(mean_squared_error(y_test_orig, y_pred_test)))
@@ -495,7 +610,15 @@ def train_model(df, id_col, target_col, feat_cols, model_type, use_log1p, test_s
     cv_scores = None
     if use_cv and len(X_train) > CV_FOLDS * 10:
         try:
-            cv_scores = cross_val_score(model, X_train, y_train, cv=CV_FOLDS, scoring='r2', n_jobs=-1)
+            # Score in the SAME units as train/test R2. Without this, CV R2 is
+            # computed in log space and is not comparable to the headline R2.
+            if use_log1p:
+                def _r2_original_units(est, X_cv, y_cv):
+                    return r2_score(np.expm1(y_cv), np.expm1(est.predict(X_cv)))
+                scorer = _r2_original_units
+            else:
+                scorer = 'r2'
+            cv_scores = cross_val_score(model, X_train, y_train, cv=CV_FOLDS, scoring=scorer, n_jobs=-1)
             logger.info(f"CV scores: {cv_scores}")
         except Exception as e:
             logger.warning(f"CV failed: {e}")
@@ -521,7 +644,7 @@ def train_model(df, id_col, target_col, feat_cols, model_type, use_log1p, test_s
     
     importance_df = None
     if hasattr(model, 'feature_importances_'):
-        importance_df = pd.DataFrame({'feature': feat_cols, 'importance': model.feature_importances_}).sort_values('importance', ascending=False)
+        importance_df = pd.DataFrame({'feature': encoded_feat_cols, 'importance': model.feature_importances_}).sort_values('importance', ascending=False)
     
     logger.info(f"Training complete. Test RMSE: {test_rmse:.3f}, Test R²: {test_r2:.3f}")
     
@@ -613,7 +736,7 @@ def handle_upload(contents, filename):
             ])
         ], color="success")
         
-        return (msg, preview, opts_all, opts_num, opts_num, guess_id, guess_target, default_feats, False, store_dataframe(df))
+        return (msg, preview, opts_all, opts_num, opts_all, guess_id, guess_target, default_feats, False, store_dataframe(df))
     except Exception as e:
         logger.error(f"Upload error: {str(e)}")
         return (dbc.Alert(f"Error: {str(e)}", color="danger"), None, [], [], [], None, None, None, True, None)
@@ -636,10 +759,11 @@ def handle_upload(contents, filename):
     State("model-selector", "value"),
     State("opt-log1p", "value"),
     State("opt-cv", "value"),
+    State("opt-aggregate", "value"),
     State("test-size-slider", "value"),
     prevent_initial_call=True
 )
-def handle_training(n, df_data, id_col, target_col, feats, model_type, logopt, cvopt, test_size):
+def handle_training(n, df_data, id_col, target_col, feats, model_type, logopt, cvopt, aggopt, test_size):
     if not n:
         raise PreventUpdate
     if not df_data:
@@ -648,7 +772,10 @@ def handle_training(n, df_data, id_col, target_col, feats, model_type, logopt, c
         df = load_dataframe(df_data)
         use_log = "log" in (logopt or [])
         use_cv = "cv" in (cvopt or [])
-        predictions, metrics, importance, test_results = train_model(df, id_col, target_col, feats or [], model_type, use_log, test_size, use_cv)
+        feats = feats or []
+        if "agg" in (aggopt or []):
+            df, feats = aggregate_to_customer_level(df, id_col, target_col, feats)
+        predictions, metrics, importance, test_results = train_model(df, id_col, target_col, feats, model_type, use_log, test_size, use_cv)
         status = dbc.Alert([
             html.I(className="fas fa-check-circle me-2"),
             html.Strong("🎉 Model Training Complete!"),
@@ -888,9 +1015,19 @@ def download_report(n, pred_json, metrics_json):
 def toggle_theme(theme):
     return theme or "light"
 
+@app.callback(Output("main-container", "className"), Input("store-theme", "data"))
+def apply_page_theme(theme):
+    # This is what was missing: the toggle updated the charts (via store-theme)
+    # but nothing ever told the PAGE itself (header, cards, background) to
+    # repaint. This callback puts a "theme-dark" class on the whole page,
+    # which the CSS in assets/dark-mode.css then styles.
+    return "theme-dark" if theme == "dark" else ""
+
 if __name__ == "__main__":
     logger.info(f"Starting CLV Predictor Pro v{APP_VERSION}...")
     logger.info(f"LightGBM available: {HAVE_LGBM}")
     logger.info(f"XGBoost available: {HAVE_XGB}")
     logger.info(f"Disk cache available: {HAVE_CACHE}")
-    app.run(host="0.0.0.0", port=3100, debug=False)
+    # 127.0.0.1 keeps the app on this machine. "0.0.0.0" exposes it to the
+    # whole local network, which is not wanted for a local analysis tool.
+    app.run(host="127.0.0.1", port=3100, debug=False)
