@@ -1,0 +1,25 @@
+{
+  "model": "xgboost_two_stage",
+  "validation": "temporal holdout (18mo calibration -> 6mo holdout)",
+  "return_auc": 0.797,
+  "return_auc_cv_mean": 0.7775,
+  "return_auc_cv_std": 0.0169,
+  "return_pr_auc": 0.8178,
+  "spearman_vs_actual_future_value": 0.6083,
+  "top20pct_revenue_capture": 0.642,
+  "baseline_top20pct_revenue_capture": 0.6516,
+  "n_train": 3972,
+  "n_test": 994,
+  "features": [
+    "recency",
+    "frequency",
+    "monetary",
+    "tenure",
+    "avg_order_value",
+    "n_items",
+    "n_products",
+    "purchase_rate",
+    "avg_gap"
+  ],
+  "target": "spend in next 6 months"
+}

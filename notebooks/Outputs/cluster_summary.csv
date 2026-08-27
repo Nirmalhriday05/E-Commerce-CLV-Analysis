@@ -1,0 +1,4 @@
+cluster,customers,median_recency,median_frequency,median_monetary,total_revenue,segment,pct_customers,pct_revenue
+0,2268,57.5,4.0,1199.83,3529955.779,Loyal Customers,38.6,19.9
+1,2397,393.0,1.0,310.72,963628.872,Hibernating,40.8,5.4
+2,1213,16.0,13.0,5125.91,13249844.527,Champions,20.6,74.7
