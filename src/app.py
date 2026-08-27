@@ -240,7 +240,7 @@ rfm["segment"] = (
     .str.strip()
     .str.replace(r"\s+", " ", regex=True)
 )
-rfm["segment"].replace({"nan": None, "NaN": None, "None": None, "": None}, inplace=True)
+rfm["segment"] = rfm["segment"].replace({"nan": None, "NaN": None, "None": None, "": None})
 rfm["segment"] = rfm["segment"].fillna("Unsegmented")
 logger.info(f"✅ Segments cleaned: {rfm['segment'].nunique()} unique segments")
 
@@ -257,8 +257,8 @@ if FILE_PRED_OUT.exists():
         
         if {"customer_id", "predicted_value"}.issubset(preds.columns):
             # Ensure consistent data types for merge
-            preds["customer_id"] = preds["customer_id"].astype(str)
-            rfm["customer_id"] = rfm["customer_id"].astype(str)
+            preds["customer_id"] = pd.to_numeric(preds["customer_id"], errors="coerce").astype("Int64").astype(str)
+            rfm["customer_id"] = pd.to_numeric(rfm["customer_id"], errors="coerce").astype("Int64").astype(str)
             
             # Merge predictions
             rfm = rfm.merge(
@@ -318,9 +318,9 @@ TARGETS = {
 }
 
 target_options = [
-    {"label": f"VIP ({len(TARGETS['vip']):,})", "value": "vip"},
-    {"label": f"Core ({len(TARGETS['core']):,})", "value": "core"},
-    {"label": f"At-Risk ({len(TARGETS['ar']):,})", "value": "ar"},
+    {"label": f"VIP \u2014 top 20% by value ({len(TARGETS['vip']):,})", "value": "vip"},
+    {"label": f"Loyal Core \u2014 K-Means cluster ({len(TARGETS['core']):,})", "value": "core"},
+    {"label": f"At-Risk \u2014 valuable & lapsed ({len(TARGETS['ar']):,})", "value": "ar"},
 ]
 
 logger.info(f"✅ Target cohorts: VIP={len(TARGETS['vip'])}, Core={len(TARGETS['core'])}, At-Risk={len(TARGETS['ar'])}")
@@ -418,7 +418,7 @@ controls = dbc.Card(
             options=(
                 [{"label": "Cluster", "value": "cluster"},
                  {"label": "Segment", "value": "segment"}]
-                + ([{"label": "Predicted Value", "value": "predicted_value"}] 
+                + ([{"label": "Predicted 6-Mo Value", "value": "predicted_value"}] 
                    if PRED_AVAILABLE else [])
             ),
             value=("cluster" if "cluster" in rfm.columns else "segment"),
@@ -444,6 +444,32 @@ controls = dbc.Card(
 
 
 # ==================== KPI CARDS ====================
+
+def _fmt_pct(x):
+    try:
+        return f"{float(x)*100:.1f}%"
+    except (TypeError, ValueError):
+        return "N/A"
+
+
+def _fmt_model(raw):
+    """Turn a raw metrics model key (e.g. 'lightgbm_log1p') into a display label."""
+    if not raw:
+        return "Unknown"
+    names = {
+        "lightgbm": "LightGBM",
+        "lgbm": "LightGBM",
+        "xgboost": "XGBoost",
+        "xgb": "XGBoost",
+        "catboost": "CatBoost",
+        "randomforest": "Random Forest",
+        "rf": "Random Forest",
+        "linreg": "Linear Regression",
+        "linear": "Linear Regression",
+        "linearregression": "Linear Regression",
+    }
+    base = str(raw).strip().split("_")[0].lower()
+    return names.get(base, str(raw))
 
 def _fmt_r2(x): 
     """Format R² value"""
@@ -472,10 +498,10 @@ extra_kpis = dbc.Row([
 # Model performance KPIs (if metrics available)
 model_kpis = (
     dbc.Row([
-        dbc.Col(kpi_card("Model R²", _fmt_r2(METRICS.get("r2"))), md=3),
-        dbc.Col(kpi_card("Model RMSE", _fmt_rmse(METRICS.get("rmse"))), md=3),
-        dbc.Col(kpi_card("Predictions", rfm["predicted_value"].notna().sum()), md=3),
-        dbc.Col(kpi_card("Model Type", METRICS.get("model", "Unknown")), md=3),
+        dbc.Col(kpi_card("Return AUC", _fmt_r2(METRICS.get("return_auc"))), md=3),
+        dbc.Col(kpi_card("Top-20% Capture", _fmt_pct(METRICS.get("top20pct_revenue_capture"))), md=3),
+        dbc.Col(kpi_card("Customers Scored", rfm["predicted_value"].notna().sum()), md=3),
+        dbc.Col(kpi_card("Model Type", _fmt_model(METRICS.get("model"))), md=3),
     ], className="g-3 mb-3")
     if METRICS else html.Div()
 )
@@ -612,7 +638,7 @@ app.layout = dbc.Container([
     html.Hr(className="mt-4"),
     dbc.Row([
         dbc.Col([
-            html.H4(f"Top {Config.TOP_N_PREDICTIONS} Customers by Predicted Value", className="mb-3"),
+            html.H4(f"Top {Config.TOP_N_PREDICTIONS} Customers by Predicted Next-6-Month Value", className="mb-3"),
             html.P("Customers most likely to generate high future value", className="text-muted small"),
         ], md=12),
     ]),
@@ -923,8 +949,10 @@ if __name__ == "__main__":
     logger.info("=" * 60)
     
     try:
-        # CRITICAL FIX: Use app.run_server() instead of app.run()
-        app.run_server(
+        # app.run() is correct for Dash 2.0+; run_server was removed in Dash 3.0.
+        # getattr fallback keeps this working on pre-2.0 installs.
+        _run = getattr(app, "run", None) or getattr(app, "run_server")
+        _run(
             host=Config.DASHBOARD_HOST,
             port=Config.DASHBOARD_PORT,
             debug=Config.DEBUG

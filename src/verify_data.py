@@ -1,62 +1,112 @@
-from pathlib import Path
-import pandas as pd
-import json
+"""
+Sanity checks for the CLV pipeline outputs.
 
-# === PATHS ===
+Reads the specific files it needs rather than globbing for whichever CSV turns up
+first, and asserts the invariants that would have caught the recency defect --
+the earlier version reported statistics without ever asking whether they were
+possible.
+"""
+
+from pathlib import Path
+import json
+import sys
+
+import pandas as pd
+
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUTS = ROOT / "Notebooks" / "Outputs"
 
-# Automatically detect the correct CSV file
-csv_candidates = list(OUTPUTS.glob("*.csv"))
-if not csv_candidates:
-    raise FileNotFoundError(f"No CSV files found in {OUTPUTS}")
-else:
-    # Prefer files that contain 'predicted' or 'rfm' in their names
-    for f in csv_candidates:
-        if "predicted" in f.name.lower() or "rfm" in f.name.lower():
-            FILE_RFM = f
-            break
-    else:
-        FILE_RFM = csv_candidates[0]
-
+FILE_RFM = OUTPUTS / "rfm_with_clusters_and_segments.csv"
+FILE_PRED = OUTPUTS / "predicted_customer_value.csv"
 FILE_METRICS = OUTPUTS / "model_metrics.json"
 
-print(f"\n✅ Using dataset: {FILE_RFM.name}")
+# Online Retail II covers 2009-12-01 to 2011-12-09.
+DATASET_SPAN_DAYS = 739
 
-# === LOAD DATA ===
+problems = []
+
+# ---------- RFM ----------
+if not FILE_RFM.exists():
+    print(f"MISSING: {FILE_RFM}")
+    sys.exit(1)
+
 rfm = pd.read_csv(FILE_RFM)
+print(f"Dataset: {FILE_RFM.name}")
+print("\n=== BASIC STATS ===")
+print(f"Rows              : {len(rfm):,}")
+print(f"Unique customers  : {rfm['customer_id'].nunique():,}")
+print(f"Total revenue     : ${rfm['monetary'].sum():,.0f}")
+print(f"Median monetary   : ${rfm['monetary'].median():,.2f}")
+print(f"Median frequency  : {rfm['frequency'].median():,.1f}")
+print(f"Recency range     : {rfm['recency'].min()}-{rfm['recency'].max()} days")
 
-# === BASIC STATS ===
-print("\n=== BASIC STATS CHECK ===")
-print(f"Rows: {len(rfm):,}")
-if "customer_id" in rfm.columns:
-    print(f"Unique Customers: {rfm['customer_id'].nunique():,}")
+# ---------- Invariants ----------
+print("\n=== SANITY CHECKS ===")
 
-if "monetary" in rfm.columns:
-    print(f"Total Revenue: {rfm['monetary'].sum():,.0f}")
-    print(f"Average Monetary: {rfm['monetary'].mean():,.2f}")
-    print(f"Median Monetary: {rfm['monetary'].median():,.2f}")
-if "frequency" in rfm.columns:
-    print(f"Average Frequency: {rfm['frequency'].mean():,.2f}")
-if "recency" in rfm.columns:
-    print(f"Median Recency: {rfm['recency'].median():,.2f}")
 
-# === PREDICTED VALUES ===
-pred_cols = [c for c in rfm.columns if "predicted" in c.lower()]
-if pred_cols:
-    col = pred_cols[0]
-    print(f"\nPredicted CLV Available: ✅ ({rfm[col].notna().sum():,} entries)")
-    print(f"Avg Predicted CLV: {rfm[col].mean():,.2f}")
+def check(label, ok, detail=""):
+    print(f"  [{'PASS' if ok else 'FAIL'}] {label}{(' - ' + detail) if detail and not ok else ''}")
+    if not ok:
+        problems.append(label)
+
+
+check(
+    f"recency within dataset span ({DATASET_SPAN_DAYS}d)",
+    rfm["recency"].max() <= DATASET_SPAN_DAYS,
+    f"max is {rfm['recency'].max()} -- date handling is broken",
+)
+check("recency positive", rfm["recency"].min() >= 1)
+check("frequency positive", rfm["frequency"].min() >= 1)
+check("monetary positive", rfm["monetary"].min() > 0)
+check("customer_id unique", rfm["customer_id"].is_unique)
+check("no null segments", rfm["segment"].notna().all())
+
+# Revenue concentration -- the project's headline claim.
+top20 = rfm.nlargest(int(round(len(rfm) * 0.20)), "monetary")["monetary"].sum()
+share = top20 / rfm["monetary"].sum()
+print(f"\n  Top 20% of customers hold {share:.1%} of revenue")
+
+# ---------- Segments ----------
+print("\n=== SEGMENTS ===")
+seg = rfm.groupby("segment").agg(
+    customers=("customer_id", "size"), revenue=("monetary", "sum")
+)
+seg["pct_customers"] = (seg.customers / len(rfm) * 100).round(1)
+seg["pct_revenue"] = (seg.revenue / rfm["monetary"].sum() * 100).round(1)
+print(seg[["customers", "pct_customers", "pct_revenue"]].to_string())
+
+# ---------- Predictions ----------
+print("\n=== PREDICTIONS ===")
+if FILE_PRED.exists():
+    pred = pd.read_csv(FILE_PRED)
+    print(f"Customers scored  : {pred['predicted_value'].notna().sum():,}")
+    print(f"Mean predicted    : ${pred['predicted_value'].mean():,.2f}")
+    print(f"Median predicted  : ${pred['predicted_value'].median():,.2f}")
+    check("predictions non-negative", pred["predicted_value"].min() >= 0)
 else:
-    print("\nPredicted CLV Available: ❌ Not found")
+    print("predicted_customer_value.csv not found")
 
-# === MODEL METRICS ===
+# ---------- Metrics ----------
+print("\n=== MODEL METRICS ===")
 if FILE_METRICS.exists():
-    with open(FILE_METRICS, "r", encoding="utf-8") as f:
-        metrics = json.load(f)
-    print("\n=== MODEL METRICS ===")
-    print(f"Model: {metrics.get('model', 'Unknown')}")
-    print(f"R²: {metrics.get('r2', 'N/A')}")
-    print(f"RMSE: {metrics.get('rmse', 'N/A')}")
+    m = json.load(open(FILE_METRICS, encoding="utf-8"))
+    print(f"Model      : {m.get('model', 'Unknown')}")
+    print(f"Validation : {m.get('validation', 'n/a')}")
+    print(f"Return AUC : {m.get('return_auc', 'n/a')} "
+          f"(CV {m.get('return_auc_cv_mean', 'n/a')} +/- {m.get('return_auc_cv_std', 'n/a')})")
+    cap = m.get("top20pct_revenue_capture")
+    base = m.get("baseline_top20pct_revenue_capture")
+    if cap is not None and base is not None:
+        print(f"Top-20% capture: {cap:.1%}  |  past-spend baseline: {base:.1%}")
+        if cap <= base:
+            print("  NOTE: model does not beat the baseline at ranking; "
+                  "its value is the calibrated return probability.")
 else:
-    print("\nNo model_metrics.json found.")
+    print("model_metrics.json not found")
+
+# ---------- Result ----------
+print()
+if problems:
+    print(f"{len(problems)} CHECK(S) FAILED: {', '.join(problems)}")
+    sys.exit(1)
+print("All checks passed.")
