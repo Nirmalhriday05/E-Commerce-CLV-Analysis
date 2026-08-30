@@ -92,8 +92,13 @@ python clv_model.py
 # 4. Verify outputs
 python verify_data.py
 
-# 5. Launch both apps (from project root)
-python launcher.py
+# 5. Launch the dashboard (from src/)
+python app.py
+# Dashboard: http://127.0.0.1:3000
+
+# 6. In a separate terminal, launch the Universal Predictor (from universal_predictor/)
+python app.py
+# Universal Predictor: http://127.0.0.1:3100
 # Dashboard:         http://127.0.0.1:3000
 # Universal Predictor: http://127.0.0.1:3100
 ```
