@@ -99,8 +99,6 @@ python app.py
 # 6. In a separate terminal, launch the Universal Predictor (from universal_predictor/)
 python app.py
 # Universal Predictor: http://127.0.0.1:3100
-# Dashboard:         http://127.0.0.1:3000
-# Universal Predictor: http://127.0.0.1:3100
 ```
 
 ---
