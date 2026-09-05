@@ -2,7 +2,6 @@
 
 **Author:** Nirmmal Hriday N R
 **Contact:** nirmalhriday12804@gmail.com
-**GitHub:** [Nirmalhriday05](https://github.com/Nirmalhriday05)
 **Institution:** Persevex Data Science Internship
 
 ---
